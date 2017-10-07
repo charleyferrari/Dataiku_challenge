@@ -1,0 +1,459 @@
+---
+title: "dataiku"
+author: "Charley Ferrari"
+date: "10/5/2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Visualizing the Variables
+
+First off I wanted to find a way to visualize each of the variables. This is a fairly messy dataset, so there was some pre-cleaning I did in Python (I rely pretty evenly on both R and Python but for some reason developed some preferences towards one or the other depending on the task at hand, for some reason the sort of cleaning I needed to do seemed better off in Python than in R.)
+
+Even when cleaned, the dataset has some challenges. In particular, most of the variables are categorical, and there are large numbers of categories 
+
+```{r cars}
+library(dplyr)
+library(ggplot2)
+library(GGally)
+library(vcd)
+library(plotly)
+library(reshape2)
+library(htmltools)
+library(pROC)
+
+
+setwd('/Users/Charley/Downloads/us_census_full')
+learn <- read.csv('census_income_learn_clean.csv')
+test <- read.csv('census_income_test_clean.csv')
+
+data <- learn
+
+categoricals <- c('class.of.worker', 'detailed.industry.recode',
+                  'detailed.occupation.recode', 'education',
+                  'enroll.in.edu.inst.last.wk', 'marital.stat',
+                  'major.industry.code',
+                  'major.occupation.code', 'race', 'hispanic.origin', 'sex',
+                  'member.of.a.labor.union', 'full.or.part.time.employment.stat',
+                  'region.of.previous.residence', 'state.of.previous.residence',
+                  'detailed.household.and.family.stat', 
+                  'detailed.household.summary.in.household',
+                  'migration.code.change.in.reg', 'migration.code.move.within.reg',
+                  'num.persons.worked.for.employer', 'family.members.under.18',
+                  'country.of.birth.father', 'country.of.birth.mother',
+                  'country.of.birth.self', 'citizenship',
+                  'own.business.or.self.employed',
+                  'fill.inc.questionnaire.for.veteran.s.admin', 
+                  'veterans.benefits', 'year', 'reason.for.unemployment',
+                  'tax.filer.stat','migration.code.change.in.msa',
+                  'live.in.this.house.1.year.ago', 
+                  'migration.prev.res.in.sunbelt')
+
+
+l <- htmltools::tagList()
+for(name in colnames(data)){
+  if(name != 'income.group'){
+    if(name %in% categoricals){
+      hmdata <- dcast(data, as.formula(paste(name, ' ~ income.group', sep='')),
+                      fun.aggregate = length)
+      rownames(hmdata) <- hmdata[,name]
+      colnames(hmdata) <- c(name, 'less than $50,000', 'more than $50,000')
+      hmdata <- hmdata[, -which(colnames(hmdata) == name)]
+      phm <- plot_ly(z = as.matrix(hmdata), y = rownames(hmdata), 
+                     x = colnames(hmdata), type = 'heatmap') %>%
+        layout(yaxis = list(showticklabels = FALSE))
+      hist1 <- plot_ly(filter(data, income.group == unique(data$income.group)[1]),
+              x = as.formula(paste('~',name,sep='')), type = 'histogram',
+              name = unique(data$income.group)[1]) %>%
+        layout(xaxis = list(showticklabels = FALSE))
+      hist2 <- plot_ly(filter(data, income.group == unique(data$income.group)[2]),
+              x = as.formula(paste('~',name,sep='')), type = 'histogram',
+              name = unique(data$income.group)[2]) %>%
+        layout(xaxis = list(showticklabels = FALSE))
+      s1 <- subplot(hist1, hist2, nrows = 2)
+      l[[name]] <- subplot(s1, phm) %>% layout(title = name)
+    } else{
+      box <- plot_ly(data, x = ~income.group, 
+                     y = as.formula(paste('~ ',name,sep='')), 
+                     type = 'box')
+      hist <- plot_ly(data, x = as.formula(paste('~ ',name,sep='')),
+                      type = 'histogram')
+      s <- subplot(box, hist) %>%
+        layout(title = name, showlegend = FALSE)
+      l[[name]] <- s
+    }
+  }
+}
+
+l
+
+
+```
+
+## Analysis
+
+This type of view helped us get a visual on the distributions of the variables. The comparitive histograms let us pretty quickly see any difference between the various categories. Usually for categorical data like this mosaic plots can help, but with a large number of variables this seemed like the best way to get a handle on what was happening.
+
+Normally for building a model I'd want to dig deeper into a few of the encoded categories, but for the purposes of this mini-assignment I'm just going to treat them as blind categories.
+
+I also would normally do some correlation tests, but this would be better if we had more numeric data. Since we do have variables with large numbers of categories, I think a huge part of feature engineering would be to pick the relevant predictive categories, and ignore the rest as noise.
+
+For my first model I'll use a logistic regression, and use the charts I just created to pick relevant categories.
+
+```{r model-test}
+
+# learn$model.class.of.worker.not.in.universe <- 
+#   ifelse(learn$class.of.worker == unique(learn$class.of.worker)[1], 1, 0)
+# Class of worker: not in universe
+
+learn$model.class.of.worker.private <- 
+  ifelse(learn$class.of.worker == unique(learn$class.of.worker)[3], 1, 0)
+# Class of worker: private
+
+learn$model.detailed.industry.recode.0 <- 
+  ifelse(learn$detailed.industry.recode == unique(learn$detailed.industry.recode)[1],
+         1, 0)
+# Detailed Industry Recode: 0
+
+# learn$model.detailed.occupation.recode.0 <- 
+#   ifelse(learn$detailed.occupation.recode == 
+#            unique(learn$detailed.occupation.recode)[1], 1, 0)
+# Detailed Occupation Recode: 0
+
+gradeschool <- unique(learn$education)[c(3,9,10,13,14,16,17)]
+learn$model.education.grade.school <- 
+  ifelse(learn$education %in% gradeschool, 1, 0)
+# Education: not a high school 
+
+learn$model.wage.per.hour <- learn$wage.per.hour
+# Wage per hour, used as is
+
+learn$model.marital.stat.married.present <- 
+  ifelse(learn$marital.stat == unique(learn$marital.stat)[4], 1, 0)
+# Marital stat: Married with spouse present
+
+learn$model.full.or.part.full.time <- 
+  ifelse(learn$full.or.part.time.employment.stat ==
+           unique(learn$full.or.part.time.employment.stat)[3], 1, 0)
+# Full or part time stat: Full time Schedule
+
+learn$model.tax.filer.stat.joint <- 
+  ifelse(learn$tax.filer.stat == unique(learn$tax.filer.stat)[3], 1, 0)
+# Tax filing stat: Joint both under 65
+
+learn$model.household.summary.householder <- 
+  ifelse(learn$detailed.household.summary.in.household == 
+           unique(learn$detailed.household.summary.in.household)[2], 1, 0)
+# Household Summary: Householder
+
+# learn$model.mexican.descent <- 
+#   ifelse((learn$country.of.birth.father == 
+#             unique(learn$country.of.birth.father)[7] |
+#             learn$country.of.birth.mother ==
+#             unique(learn$country.of.birth.father)[7] |
+#            learn$country.of.birth.self == 
+#            unique(learn$country.of.birth.father)[7]), 1, 0)
+# Country of birth of the person or any of their parents: Mexico
+
+# learn$model.veterans.benefits.0 <- 
+#   ifelse(learn$veterans.benefits == unique(learn$veterans.benefits)[2], 1, 0)
+# Veterans benefits code is 0
+
+#################################
+
+# test$model.class.of.worker.not.in.universe <- 
+#   ifelse(test$class.of.worker == unique(learn$class.of.worker)[1], 1, 0)
+# Class of worker: not in universe
+
+test$model.class.of.worker.private <- 
+  ifelse(test$class.of.worker == unique(learn$class.of.worker)[3], 1, 0)
+# Class of worker: private
+
+test$model.detailed.industry.recode.0 <- 
+  ifelse(test$detailed.industry.recode == unique(learn$detailed.industry.recode)[1],
+         1, 0)
+# Detailed Industry Recode: 0
+
+# test$model.detailed.occupation.recode.0 <- 
+#   ifelse(test$detailed.occupation.recode == 
+#            unique(learn$detailed.occupation.recode)[1], 1, 0)
+# Detailed Occupation Recode: 0
+
+gradeschool <- unique(learn$education)[c(3,9,10,13,14,16,17)]
+test$model.education.grade.school <- 
+  ifelse(test$education %in% gradeschool, 1, 0)
+# Education: not a high school
+
+test$model.wage.per.hour <- test$wage.per.hour
+# Wage per hour, used as is
+
+test$model.marital.stat.married.present <- 
+  ifelse(test$marital.stat == unique(learn$marital.stat)[4], 1, 0)
+# Marital stat: Married with spouse present
+
+test$model.full.or.part.full.time <- 
+  ifelse(test$full.or.part.time.employment.stat ==
+           unique(learn$full.or.part.time.employment.stat)[3], 1, 0)
+# Full or part time stat: Full time Schedule
+
+test$model.tax.filer.stat.joint <- 
+  ifelse(test$tax.filer.stat == unique(learn$tax.filer.stat)[3], 1, 0)
+# Tax filing stat: Joint both under 65
+
+test$model.household.summary.householder <- 
+  ifelse(test$detailed.household.summary.in.household == 
+           unique(learn$detailed.household.summary.in.household)[2], 1, 0)
+# Household Summary: Householder
+
+# test$model.mexican.descent <- 
+#   ifelse((test$country.of.birth.father == 
+#             unique(learn$country.of.birth.father)[7] |
+#             test$country.of.birth.mother ==
+#             unique(learn$country.of.birth.father)[7] | 
+#            test$country.of.birth.self == 
+#            unique(learn$country.of.birth.father)[7]), 1, 0)
+# Country of birth of the person or any of their parents: Mexico
+
+# test$model.veterans.benefits.0 <- 
+#   ifelse(test$veterans.benefits == unique(learn$veterans.benefits)[2], 1, 0)
+# Veterans benefits code is 0
+
+```
+
+(Note, I removed some variables that proved to be insignificant in the model, but kept evidence of their creation commented out to show what I was noticing)
+
+Now that I have my variables defined, I'll start to build a model. First, I will balance out my data, to make sure I have a 50/50 split for income level.
+
+```{r split}
+
+fiftyplus <- learn %>% filter(income.group == unique(learn$income.group)[2])
+fiftyminus <- learn %>% filter(income.group == unique(learn$income.group)[1])
+fiftyminus <- fiftyminus[sample(nrow(fiftyminus), nrow(fiftyplus)),]
+model.learn <- rbind(fiftyminus, fiftyplus)
+
+```
+
+And with my new model.learn data, I can build my logistic model
+
+```{r model}
+
+model <- glm(income.group ~ model.class.of.worker.private + 
+               model.detailed.industry.recode.0 + 
+               model.education.grade.school + model.wage.per.hour + 
+               model.marital.stat.married.present + model.full.or.part.full.time + 
+               model.tax.filer.stat.joint + model.household.summary.householder,
+             data = model.learn, family = binomial)
+
+model.learn$predict <- predict(model, type='response')
+test$predict <- predict(model, newdata = test, type = 'response')
+
+summary(model)
+
+par(mfrow=c(2,2))
+
+plot(model)
+
+par(mfrow=c(1,1))
+
+roctest <- roc(factor(income.group) ~ predict, data=model.learn)
+
+plot(roctest)
+
+paste("Model 1 Area under the curve:",auc(roctest),sep=" ")
+
+```
+
+```{r}
+
+accuracy.calc <- function(data, actual, proportion, cutoff){
+  data$predicted <- ifelse(data[,proportion]>cutoff, 1, 0)
+  confusion <- table(dplyr::select(data, actual, predicted))
+  if(dim(confusion)[2] == 1){
+    if(colnames(confusion) == 0){
+      accuracy <- confusion[1,1]/sum(confusion)
+    } else{
+      accuracy <- confusion[2,2]/sum(confusion)
+    }
+  } else{
+    accuracy <- (confusion[1,1] + confusion[2,2])/sum(confusion)
+  }
+  return(accuracy)
+}
+
+cer.calc <- function(data, actual, proportion, cutoff){
+  data$predicted <- ifelse(data[,proportion]>cutoff, 1, 0)
+  confusion <- table(dplyr::select(data, actual, predicted))
+  if(dim(confusion)[2] == 1){
+    if(colnames(confusion) == 0){
+      cer <- confusion[2,1]/sum(confusion)
+    } else{
+      cer <- confusion[1,1]/sum(confusion)
+    }
+  } else{
+    cer <- (confusion[1,2] + confusion[2,1])/sum(confusion)
+  }
+  return(cer)
+}
+
+precision.calc <- function(data, actual, proportion, cutoff){
+  data$predicted <- ifelse(data[,proportion]>cutoff, 1, 0)
+  confusion <- table(dplyr::select(data, actual, predicted))
+  if(dim(confusion)[2] == 1){
+    if(colnames(confusion) == 0){
+      precision <- 1
+    } else{
+      precision <- confusion[2,1]/(confusion[1,1]+confusion[2,1])
+    }
+  } else{
+    precision <- confusion[2,2]/(confusion[1,2] + confusion[2,2])
+  }
+  return(precision)
+}
+
+sensitivity.calc <- function(data, actual, proportion, cutoff){
+  data$predicted <- ifelse(data[,proportion]>cutoff, 1, 0)
+  confusion <- table(dplyr::select(data, actual, predicted))
+  if(dim(confusion)[2] == 1){
+    if(colnames(confusion) == 0){
+      sensitivity <- 0
+    } else{
+      sensitivity <- 1
+    }
+  } else{
+      sensitivity <- confusion[2,2]/(confusion[2,1] + confusion[2,2])
+  }
+  
+  return(sensitivity)
+}
+
+specificity.calc <- function(data, actual, proportion, cutoff){
+  data$predicted <- ifelse(data[,proportion]>cutoff, 1, 0)
+  confusion <- table(dplyr::select(data, actual, predicted))
+  if(dim(confusion)[2] == 1){
+    if(colnames(confusion) == 0){
+      specificity <- 1
+    } else{
+      specificity <- 0
+    }
+  } else{
+    specificity <- confusion[1,1]/(confusion[1,1] + confusion[1,2])
+  }
+  return(specificity)
+}
+
+f1.calc <- function(data, actual, proportion, cutoff){
+  precision <- precision.calc(data, actual, proportion, cutoff)
+  sensitivity <- sensitivity.calc(data, actual, proportion, cutoff)
+  f1 <- (2 * precision * sensitivity)/(precision + sensitivity)
+  return(f1)
+}
+
+cutofflist <- seq(0.05,0.95,by=0.05)
+
+# Learning dataset measures
+
+measures <- data.frame(cutoff = cutofflist, model = 1,
+                       accuracy = apply(matrix(cutofflist), 1, accuracy.calc, 
+                                        data = model.learn, actual = "income.group",
+                                        proportion = "predict"),
+                       cer = apply(matrix(cutofflist), 1, cer.calc,
+                                   data = model.learn, actual = "income.group", 
+                                   proportion = "predict"),
+                       precision = apply(matrix(cutofflist), 1, precision.calc,
+                                         data = model.learn, 
+                                         actual = "income.group", 
+                                         proportion = "predict"),
+                       sensitivity = apply(matrix(cutofflist), 1, sensitivity.calc,
+                                           data = model.learn, 
+                                           actual = "income.group", 
+                                           proportion = "predict"),
+                       specificity = apply(matrix(cutofflist), 1, specificity.calc,
+                                           data = model.learn, 
+                                           actual = "income.group", 
+                                           proportion = "predict"),
+                       f1 = apply(matrix(cutofflist), 1, f1.calc,
+                                  data = model.learn, actual = "income.group", 
+                                  proportion = "predict"))
+
+accuracyPlot <- plot_ly(measures, x = ~cutoff, y = ~accuracy, type = 'scatter', 
+                        mode = 'lines', name = 'Accuracy')
+cerPlot <- plot_ly(measures, x = ~cutoff, y = ~cer, type = 'scatter', 
+                        mode = 'lines', name = 'CER')
+precisionPlot <- plot_ly(measures, x = ~cutoff, y = ~precision, type = 'scatter', 
+                        mode = 'lines', name = 'Precision')
+sensitivityPlot <- plot_ly(measures, x = ~cutoff, y = ~sensitivity, 
+                           type = 'scatter',  mode = 'lines', 
+                           name = 'Sensitivity')
+specificityPlot <- plot_ly(measures, x = ~cutoff, y = ~specificity, type = 'scatter',
+                           mode = 'lines', name = 'Specificity')
+f1Plot <- plot_ly(measures, x = ~cutoff, y = ~f1, type = 'scatter', 
+                  mode = 'lines', name = 'F1 Score')
+
+subplot(accuracyPlot, cerPlot, precisionPlot, sensitivityPlot, specificityPlot, 
+        f1Plot, nrows = 2) %>% layout(title = 'Learning Dataset Measures')
+
+# Test dataset measures
+
+measures <- data.frame(cutoff = cutofflist, model = 1,
+                       accuracy = apply(matrix(cutofflist), 1, accuracy.calc, 
+                                        data = test, actual = "income.group",
+                                        proportion = "predict"),
+                       cer = apply(matrix(cutofflist), 1, cer.calc,
+                                   data = test, actual = "income.group", 
+                                   proportion = "predict"),
+                       precision = apply(matrix(cutofflist), 1, precision.calc,
+                                         data = test, actual = "income.group", 
+                                         proportion = "predict"),
+                       sensitivity = apply(matrix(cutofflist), 1, sensitivity.calc,
+                                           data = test, 
+                                           actual = "income.group", 
+                                           proportion = "predict"),
+                       specificity = apply(matrix(cutofflist), 1, specificity.calc,
+                                           data = test, 
+                                           actual = "income.group", 
+                                           proportion = "predict"),
+                       f1 = apply(matrix(cutofflist), 1, f1.calc,
+                                  data = test, actual = "income.group", 
+                                  proportion = "predict"))
+
+accuracyPlot <- plot_ly(measures, x = ~cutoff, y = ~accuracy, type = 'scatter', 
+                        mode = 'lines', name = 'Accuracy')
+cerPlot <- plot_ly(measures, x = ~cutoff, y = ~cer, type = 'scatter', 
+                        mode = 'lines', name = 'CER')
+precisionPlot <- plot_ly(measures, x = ~cutoff, y = ~precision, type = 'scatter', 
+                        mode = 'lines', name = 'Precision')
+sensitivityPlot <- plot_ly(measures, x = ~cutoff, y = ~sensitivity, 
+                           type = 'scatter',  mode = 'lines', 
+                           name = 'Sensitivity')
+specificityPlot <- plot_ly(measures, x = ~cutoff, y = ~specificity, type = 'scatter',
+                           mode = 'lines', name = 'Specificity')
+f1Plot <- plot_ly(measures, x = ~cutoff, y = ~f1, type = 'scatter', 
+                  mode = 'lines', name = 'F1 Score')
+
+subplot(accuracyPlot, cerPlot, precisionPlot, sensitivityPlot, specificityPlot, 
+        f1Plot, nrows = 2) %>% layout(title = 'Test Dataset Measures')
+
+```
+
+Our diagnostic plots all look good. The Q-Q plot is close to the diagonal, and our residuals look under control. The area under the ROC curve is ~0.85, which is pretty good for a census dataset like this. The most comparible metric across different model types would be found in the confusion matrix, and depend on what cutoff we use. Considering a cutoff of 0.5, the accuracy on the learning dataset was 0.78 and the test dataset was 0.74.
+
+## Random Forest
+
+```{r}
+
+# library(randomForest)
+# 
+# learn <- read.csv('census_income_learn_clean.csv')
+# test <- read.csv('census_income_test_clean.csv')
+# # Re-read in the data so we can apply the random forest model with all predictors
+# 
+# #model.rf <- randomForest(income.group ~ ., data = learn)
+
+```
+
+
