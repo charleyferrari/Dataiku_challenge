@@ -26,6 +26,7 @@ library(plotly)
 library(reshape2)
 library(htmltools)
 library(pROC)
+library(randomForest)
 
 
 setwd('/Users/Charley/Downloads/us_census_full')
@@ -99,9 +100,11 @@ l
 
 This type of view helped us get a visual on the distributions of the variables. The comparitive histograms let us pretty quickly see any difference between the various categories. Usually for categorical data like this mosaic plots can help, but with a large number of variables this seemed like the best way to get a handle on what was happening.
 
-Normally for building a model I'd want to dig deeper into a few of the encoded categories, but for the purposes of this mini-assignment I'm just going to treat them as blind categories.
+Normally for building a model I'd want to dig deeper into a few of the encoded categories, but for the purposes of this mini-assignment I'm just going to treat them naively as blind categories.
 
 I also would normally do some correlation tests, but this would be better if we had more numeric data. Since we do have variables with large numbers of categories, I think a huge part of feature engineering would be to pick the relevant predictive categories, and ignore the rest as noise.
+
+## Model Building
 
 For my first model I'll use a logistic regression, and use the charts I just created to pick relevant categories.
 
@@ -242,25 +245,25 @@ And with my new model.learn data, I can build my logistic model
 
 ```{r model}
 
-model <- glm(income.group ~ model.class.of.worker.private + 
+model.log <- glm(income.group ~ model.class.of.worker.private + 
                model.detailed.industry.recode.0 + 
                model.education.grade.school + model.wage.per.hour + 
                model.marital.stat.married.present + model.full.or.part.full.time + 
                model.tax.filer.stat.joint + model.household.summary.householder,
              data = model.learn, family = binomial)
 
-model.learn$predict <- predict(model, type='response')
-test$predict <- predict(model, newdata = test, type = 'response')
+model.learn$predict.log <- predict(model.log, type='response')
+test$predict.log <- predict(model.log, newdata = test, type = 'response')
 
-summary(model)
+summary(model.log)
 
 par(mfrow=c(2,2))
 
-plot(model)
+plot(model.log)
 
 par(mfrow=c(1,1))
 
-roctest <- roc(factor(income.group) ~ predict, data=model.learn)
+roctest <- roc(factor(income.group) ~ predict.log, data=model.learn)
 
 plot(roctest)
 
@@ -269,6 +272,8 @@ paste("Model 1 Area under the curve:",auc(roctest),sep=" ")
 ```
 
 ```{r}
+
+# Some helper functions for model diagnostics
 
 accuracy.calc <- function(data, actual, proportion, cutoff){
   data$predicted <- ifelse(data[,proportion]>cutoff, 1, 0)
@@ -360,25 +365,25 @@ cutofflist <- seq(0.05,0.95,by=0.05)
 measures <- data.frame(cutoff = cutofflist, model = 1,
                        accuracy = apply(matrix(cutofflist), 1, accuracy.calc, 
                                         data = model.learn, actual = "income.group",
-                                        proportion = "predict"),
+                                        proportion = "predict.log"),
                        cer = apply(matrix(cutofflist), 1, cer.calc,
                                    data = model.learn, actual = "income.group", 
-                                   proportion = "predict"),
+                                   proportion = "predict.log"),
                        precision = apply(matrix(cutofflist), 1, precision.calc,
                                          data = model.learn, 
                                          actual = "income.group", 
-                                         proportion = "predict"),
+                                         proportion = "predict.log"),
                        sensitivity = apply(matrix(cutofflist), 1, sensitivity.calc,
                                            data = model.learn, 
                                            actual = "income.group", 
-                                           proportion = "predict"),
+                                           proportion = "predict.log"),
                        specificity = apply(matrix(cutofflist), 1, specificity.calc,
                                            data = model.learn, 
                                            actual = "income.group", 
-                                           proportion = "predict"),
+                                           proportion = "predict.log"),
                        f1 = apply(matrix(cutofflist), 1, f1.calc,
                                   data = model.learn, actual = "income.group", 
-                                  proportion = "predict"))
+                                  proportion = "predict.log"))
 
 accuracyPlot <- plot_ly(measures, x = ~cutoff, y = ~accuracy, type = 'scatter', 
                         mode = 'lines', name = 'Accuracy')
@@ -402,24 +407,24 @@ subplot(accuracyPlot, cerPlot, precisionPlot, sensitivityPlot, specificityPlot,
 measures <- data.frame(cutoff = cutofflist, model = 1,
                        accuracy = apply(matrix(cutofflist), 1, accuracy.calc, 
                                         data = test, actual = "income.group",
-                                        proportion = "predict"),
+                                        proportion = "predict.log"),
                        cer = apply(matrix(cutofflist), 1, cer.calc,
                                    data = test, actual = "income.group", 
-                                   proportion = "predict"),
+                                   proportion = "predict.log"),
                        precision = apply(matrix(cutofflist), 1, precision.calc,
                                          data = test, actual = "income.group", 
-                                         proportion = "predict"),
+                                         proportion = "predict.log"),
                        sensitivity = apply(matrix(cutofflist), 1, sensitivity.calc,
                                            data = test, 
                                            actual = "income.group", 
-                                           proportion = "predict"),
+                                           proportion = "predict.log"),
                        specificity = apply(matrix(cutofflist), 1, specificity.calc,
                                            data = test, 
                                            actual = "income.group", 
-                                           proportion = "predict"),
+                                           proportion = "predict.log"),
                        f1 = apply(matrix(cutofflist), 1, f1.calc,
                                   data = test, actual = "income.group", 
-                                  proportion = "predict"))
+                                  proportion = "predict.log"))
 
 accuracyPlot <- plot_ly(measures, x = ~cutoff, y = ~accuracy, type = 'scatter', 
                         mode = 'lines', name = 'Accuracy')
@@ -442,18 +447,132 @@ subplot(accuracyPlot, cerPlot, precisionPlot, sensitivityPlot, specificityPlot,
 
 Our diagnostic plots all look good. The Q-Q plot is close to the diagonal, and our residuals look under control. The area under the ROC curve is ~0.85, which is pretty good for a census dataset like this. The most comparible metric across different model types would be found in the confusion matrix, and depend on what cutoff we use. Considering a cutoff of 0.5, the accuracy on the learning dataset was 0.78 and the test dataset was 0.74.
 
+I'm a bit concerned about some of the measures for the test dataset. With the learning dataset I'm getting some expected behavior: the accuracy for example peaks around 0.5 and then goes down. For the test dataset, accuracy goes up to 1 as the cutoff approaches 1. The accuracy around 0.5 seems right, but the behavior as the cutoff is increasing is a bit troublesome (I'll touch on this again in further works.)
+
 ## Random Forest
+
+Next lets use the same variables and build a Random Forest model.
 
 ```{r}
 
-# library(randomForest)
-# 
+
 # learn <- read.csv('census_income_learn_clean.csv')
 # test <- read.csv('census_income_test_clean.csv')
-# # Re-read in the data so we can apply the random forest model with all predictors
-# 
-# #model.rf <- randomForest(income.group ~ ., data = learn)
+# Re-read in the data so we can apply the random forest model with all predictors
+
+model.rf <- randomForest(income.group ~ model.class.of.worker.private + 
+               model.detailed.industry.recode.0 + 
+               model.education.grade.school + model.wage.per.hour + 
+               model.marital.stat.married.present + model.full.or.part.full.time + 
+               model.tax.filer.stat.joint + model.household.summary.householder, 
+               data = model.learn)
+
+model.learn$predict.rf <- predict(model.rf, type='prob')[,2]
+test$predict.rf <- predict(model.rf, newdata = test, type = 'prob')[,2]
+
+summary(model.rf)
+
+roctest <- roc(factor(income.group) ~ predict.rf, data=model.learn)
+
+plot(roctest)
+
+paste("Model 1 Area under the curve:",auc(roctest),sep=" ")
 
 ```
 
+```{r}
+# Learning dataset measures
 
+measures <- data.frame(cutoff = cutofflist, model = 1,
+                       accuracy = apply(matrix(cutofflist), 1, accuracy.calc, 
+                                        data = model.learn, actual = "income.group",
+                                        proportion = "predict.rf"),
+                       cer = apply(matrix(cutofflist), 1, cer.calc,
+                                   data = model.learn, actual = "income.group", 
+                                   proportion = "predict.rf"),
+                       precision = apply(matrix(cutofflist), 1, precision.calc,
+                                         data = model.learn, 
+                                         actual = "income.group", 
+                                         proportion = "predict.rf"),
+                       sensitivity = apply(matrix(cutofflist), 1, sensitivity.calc,
+                                           data = model.learn, 
+                                           actual = "income.group", 
+                                           proportion = "predict.rf"),
+                       specificity = apply(matrix(cutofflist), 1, specificity.calc,
+                                           data = model.learn, 
+                                           actual = "income.group", 
+                                           proportion = "predict.rf"),
+                       f1 = apply(matrix(cutofflist), 1, f1.calc,
+                                  data = model.learn, actual = "income.group", 
+                                  proportion = "predict.rf"))
+
+accuracyPlot <- plot_ly(measures, x = ~cutoff, y = ~accuracy, type = 'scatter', 
+                        mode = 'lines', name = 'Accuracy')
+cerPlot <- plot_ly(measures, x = ~cutoff, y = ~cer, type = 'scatter', 
+                        mode = 'lines', name = 'CER')
+precisionPlot <- plot_ly(measures, x = ~cutoff, y = ~precision, type = 'scatter', 
+                        mode = 'lines', name = 'Precision')
+sensitivityPlot <- plot_ly(measures, x = ~cutoff, y = ~sensitivity, 
+                           type = 'scatter',  mode = 'lines', 
+                           name = 'Sensitivity')
+specificityPlot <- plot_ly(measures, x = ~cutoff, y = ~specificity, type = 'scatter',
+                           mode = 'lines', name = 'Specificity')
+f1Plot <- plot_ly(measures, x = ~cutoff, y = ~f1, type = 'scatter', 
+                  mode = 'lines', name = 'F1 Score')
+
+subplot(accuracyPlot, cerPlot, precisionPlot, sensitivityPlot, specificityPlot, 
+        f1Plot, nrows = 2) %>% layout(title = 'Learning Dataset Measures')
+
+# Test dataset measures
+
+measures <- data.frame(cutoff = cutofflist, model = 1,
+                       accuracy = apply(matrix(cutofflist), 1, accuracy.calc, 
+                                        data = test, actual = "income.group",
+                                        proportion = "predict.rf"),
+                       cer = apply(matrix(cutofflist), 1, cer.calc,
+                                   data = test, actual = "income.group", 
+                                   proportion = "predict.rf"),
+                       precision = apply(matrix(cutofflist), 1, precision.calc,
+                                         data = test, actual = "income.group", 
+                                         proportion = "predict.rf"),
+                       sensitivity = apply(matrix(cutofflist), 1, sensitivity.calc,
+                                           data = test, 
+                                           actual = "income.group", 
+                                           proportion = "predict.rf"),
+                       specificity = apply(matrix(cutofflist), 1, specificity.calc,
+                                           data = test, 
+                                           actual = "income.group", 
+                                           proportion = "predict.rf"),
+                       f1 = apply(matrix(cutofflist), 1, f1.calc,
+                                  data = test, actual = "income.group", 
+                                  proportion = "predict.rf"))
+
+accuracyPlot <- plot_ly(measures, x = ~cutoff, y = ~accuracy, type = 'scatter', 
+                        mode = 'lines', name = 'Accuracy')
+cerPlot <- plot_ly(measures, x = ~cutoff, y = ~cer, type = 'scatter', 
+                        mode = 'lines', name = 'CER')
+precisionPlot <- plot_ly(measures, x = ~cutoff, y = ~precision, type = 'scatter', 
+                        mode = 'lines', name = 'Precision')
+sensitivityPlot <- plot_ly(measures, x = ~cutoff, y = ~sensitivity, 
+                           type = 'scatter',  mode = 'lines', 
+                           name = 'Sensitivity')
+specificityPlot <- plot_ly(measures, x = ~cutoff, y = ~specificity, type = 'scatter',
+                           mode = 'lines', name = 'Specificity')
+f1Plot <- plot_ly(measures, x = ~cutoff, y = ~f1, type = 'scatter', 
+                  mode = 'lines', name = 'F1 Score')
+
+subplot(accuracyPlot, cerPlot, precisionPlot, sensitivityPlot, specificityPlot, 
+        f1Plot, nrows = 2) %>% layout(title = 'Test Dataset Measures')
+```
+
+Diagnostics for the Random Forest model are very similar. In terms of comparable metrics, I have a similar accuracy and area under the ROC curve. I'm still having some issues with the test dataset, but once again, the accuracy seems around the same.
+
+## Discussion
+
+There's a lot more to be done for a true comparison between these two models. The similar measures imply that the feature engineering was driving the accuracy more than my choice of algorithm. In building a robust model, I would want to test my features a lot more. 
+
+I come from an economics background, where explanatory power carries more importance than in other applications of data science. For this reason, I would naturally lean towards a simpler model type that has strong explanatory power. In other words: feature engineering with a logistic regression.
+
+Random Forest however might be more useful given the type of variables I have. Large numbers of categories might lend themselves to a decision tree rather than a regression. Because of this, I would probably continue using both approaches, in case I get dramatically better results with better features in a Random Forest model.
+
+Lastly, I need to find out what's going on with some of my diagnostic charts. I've used these functions for visualizing classification problems before. I trust the measures around 0.5, but the graphs don't appear right as you get greater than 0.5. Theoretically these functions should work for test datasets the same way as it works for learning datasets (all it needs is the predicted column,) but it's clear something weird is happening when the model is being applied to a new dataset.
